@@ -18,7 +18,8 @@ import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.beans.factory.annotation.Value;
 
 data class Greeting(val id: Long, val content: String)
-// Sentiment enumeration
+
+// Enumerate Sentiments - error used if occured
 enum class Sentiment {
     VERY_NEGATIVE,
     NEGATIVE,
@@ -28,6 +29,7 @@ enum class Sentiment {
     ERROR,
 }
 
+// These data classes are used to submit REST calls to Azure AI API  
 data class DetectedLanguage(val name: String, val iso6391Name: String, val score: Int)
 
 data class Documents(val documents: List<Document>)
@@ -37,45 +39,41 @@ data class Documents(val documents: List<Document>)
                         val language: String? = null,
                         val detectedLanguages: List<DetectedLanguage>? = null)
 
+// Simple function to return sentiment, accepts azure api key and endpoint
 fun getSentiment(key: String, endpoint: String, text: String) : Sentiment {
-    println("getSentiment [$key] | [$endpoint]")
-
-    // Build a common web client for our requests.
+    // Simple web client to make our requests
     val webClient = WebClient.builder()
             .baseUrl(endpoint)
             .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
             .defaultHeader("Ocp-Apim-Subscription-Key", key)
             .build()
 
-    // We first need to guess the language for the input text:
-    // the sentiment score will be better if the language is known.
+    // Detect the language
+    println("Detecting For | $text")
+    val languageDocuments = Documents(listOf(Document(1, text)))
+    val languageResponse = webClient.post()
+        .uri("/languages").body(BodyInserters.fromObject(languageDocuments))
+        .exchange().block()?.bodyToMono(Documents::class.java)?.block()
+        ?: throw RuntimeException("Exception: Could not detect language")
+    val languageName = languageResponse.documents[0].detectedLanguages!![0].iso6391Name
+    println("Detected [$languageName] language")
 
-    println("Detecting language from: $text")
-    val langDocs = Documents(listOf(Document(1, text)))
-    val langResp = webClient.post()
-            .uri("/languages").body(BodyInserters.fromObject(langDocs))
+    // Detect the sentiment 
+    val sentimentDocuments = Documents(listOf(Document(1, text, language = languageName)))
+    val sentimentResponse = webClient.post()
+            .uri("/sentiment").body(BodyInserters.fromObject(sentimentDocuments))
             .exchange().block()?.bodyToMono(Documents::class.java)?.block()
-            ?: throw RuntimeException("Failed to detect language")
+            ?: throw RuntimeException("Exception: Could not detect sentiment")
 
-    val lang = langResp.documents[0].detectedLanguages!![0].iso6391Name
-    println("Detecting sentiment with language [$lang] | $text")
-
-    val sentimentDocs = Documents(listOf(Document(1, text, language = lang)))
-    val sentimentResp = webClient.post()
-            .uri("/sentiment").body(BodyInserters.fromObject(sentimentDocs))
-            .exchange().block()?.bodyToMono(Documents::class.java)?.block()
-            ?: throw RuntimeException("Failed to detect sentiment score")
-
-    val sentimentScore = sentimentResp.documents[0].score!!
+    // return the score translated into a friendly name
+    val sentimentScore = sentimentResponse.documents[0].score!!
     val Sentiment = sentimentScore.toSentiment()
-    print("Detected sentiment score: $text -> $sentimentScore -> $Sentiment")
+    print("Sentiment [$sentimentScore] | [$Sentiment]")
 
     return Sentiment
 }
 
-/**
-  Convert a sentiment score to a [Sentiment] instance.
-     */
+// Translate float to a Sentiment enum
 fun Float.toSentiment(): Sentiment {
     if (this < 0.2) {
         return Sentiment.VERY_NEGATIVE
@@ -92,8 +90,7 @@ fun Float.toSentiment(): Sentiment {
     return Sentiment.VERY_POSITIVE
 }
 
-
-
+// This is the Rest Controller that Says Hello or Return the Sentiment of text passed
 @RestController
 class SentimentController {
     val counter = AtomicLong()
